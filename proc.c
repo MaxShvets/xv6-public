@@ -14,6 +14,7 @@ struct {
 
 static struct proc *initproc;
 
+int n_runnable_tickets = 0;
 int nextpid = 1;
 extern void forkret(void);
 extern void trapret(void);
@@ -111,6 +112,7 @@ found:
   p->context = (struct context*)sp;
   memset(p->context, 0, sizeof *p->context);
   p->context->eip = (uint)forkret;
+  p->n_tickets = 1;
 
   return p;
 }
@@ -149,6 +151,7 @@ userinit(void)
   acquire(&ptable.lock);
 
   p->state = RUNNABLE;
+  n_runnable_tickets += p->n_tickets;
 
   release(&ptable.lock);
 }
@@ -199,6 +202,7 @@ fork(void)
   np->sz = curproc->sz;
   np->parent = curproc;
   *np->tf = *curproc->tf;
+  np->n_tickets = curproc->n_tickets;
 
   // Clear %eax so that fork returns 0 in the child.
   np->tf->eax = 0;
@@ -215,6 +219,7 @@ fork(void)
   acquire(&ptable.lock);
 
   np->state = RUNNABLE;
+  n_runnable_tickets += np->n_tickets;
 
   release(&ptable.lock);
 
@@ -263,6 +268,7 @@ exit(void)
 
   // Jump into the scheduler, never to return.
   curproc->state = ZOMBIE;
+  n_runnable_tickets -= curproc->n_tickets;
   sched();
   panic("zombie exit");
 }
@@ -311,6 +317,14 @@ wait(void)
   }
 }
 
+unsigned long randstate = 1;
+unsigned int
+rand()
+{
+  randstate = randstate * 1664525 + 1013904223;
+  return randstate;
+}
+
 //PAGEBREAK: 42
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
@@ -332,9 +346,22 @@ scheduler(void)
 
     // Loop over process table looking for process to run.
     acquire(&ptable.lock);
+
+    if (n_runnable_tickets == 0) {
+      release(&ptable.lock);
+      continue;
+    }
+
+    unsigned int prize = rand() % n_runnable_tickets;
+    unsigned int winnings = 0;
     for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
       if(p->state != RUNNABLE)
         continue;
+
+      winnings += p->n_tickets;
+      if (winnings <= prize) {
+        continue;
+      }
 
       // Switch to chosen process.  It is the process's job
       // to release ptable.lock and then reacquire it
@@ -349,6 +376,7 @@ scheduler(void)
       // Process is done running for now.
       // It should have changed its p->state before coming back.
       c->proc = 0;
+      break;
     }
     release(&ptable.lock);
 
@@ -438,6 +466,7 @@ sleep(void *chan, struct spinlock *lk)
   // Go to sleep.
   p->chan = chan;
   p->state = SLEEPING;
+  n_runnable_tickets -= p->n_tickets;
 
   sched();
 
@@ -460,8 +489,10 @@ wakeup1(void *chan)
   struct proc *p;
 
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++)
-    if(p->state == SLEEPING && p->chan == chan)
+    if(p->state == SLEEPING && p->chan == chan) {
       p->state = RUNNABLE;
+      n_runnable_tickets += p->n_tickets;
+    }
 }
 
 // Wake up all processes sleeping on chan.
@@ -486,8 +517,10 @@ kill(int pid)
     if(p->pid == pid){
       p->killed = 1;
       // Wake process from sleep if necessary.
-      if(p->state == SLEEPING)
+      if(p->state == SLEEPING) {
         p->state = RUNNABLE;
+        n_runnable_tickets += p->n_tickets;
+      }
       release(&ptable.lock);
       return 0;
     }
