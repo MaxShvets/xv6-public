@@ -6,6 +6,7 @@
 #include "x86.h"
 #include "proc.h"
 #include "spinlock.h"
+#include "pstat.h"
 
 struct {
   struct spinlock lock;
@@ -527,6 +528,25 @@ kill(int pid)
   }
   release(&ptable.lock);
   return -1;
+}
+
+int getpinfo(struct pstat *stat) {
+  for(int i = 0; i < NPROC; i++) {
+    struct proc p = ptable.proc[i];
+    
+    if(p.state == UNUSED) {
+      stat->inuse[i] = 0;
+      continue;
+    } else {
+      stat->inuse[i] = 1;
+    }
+
+    stat->tickets[i] = p.n_tickets;
+    stat->pid[i] = p.pid;
+    stat->ticks[i] = 0;
+  }
+
+  return 0;
 }
 
 //PAGEBREAK: 36
